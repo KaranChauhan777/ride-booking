@@ -1,0 +1,19 @@
+{
+  "name": "ride-booking",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "concurrently -n driver1,driver2,driver3,main1,main2,lb -c blue,green,yellow,magenta,cyan,red \"node driver-1.js\" \"node driver-2.js\" \"node driver-3.js\" \"node main-server-1.js\" \"node main-server-2.js\" \"node load-balancer.js\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.1.0",
+    "redis": "^4.7.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4"
+  }
+}
