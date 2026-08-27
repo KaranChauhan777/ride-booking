@@ -1,6 +1,8 @@
 const express = require('express');
+const redisClient = require('./redis-client');
 const app = express();
 const PORT = 3000;
+const MY_NAME = 'main-server-1'; 
 
 const drivers = [
   'http://localhost:4001',
@@ -8,7 +10,30 @@ const drivers = [
   'http://localhost:4003',
 ];
 
+const LOCK_KEY = 'main-server-leader-lock';
+const LOCK_TTL_SECONDS = 5;
+let isLeader = false;
+
+async function leaderElectionLoop() {
+  while (true) {
+    if (isLeader) {
+      await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
+    } else {
+      const result = await redisClient.set(LOCK_KEY, MY_NAME, { NX: true, EX: LOCK_TTL_SECONDS });
+      if (result === 'OK') {
+        console.log(`👑 ${MY_NAME}: Main ab LEADER hoon!`);
+        isLeader = true;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+leaderElectionLoop();
+
 app.get('/request-ride', async (req, res) => {
+   if (!isLeader) {
+    return res.status(503).json({ message: `${MY_NAME} Leader nahi hai abhi` });
+  }
   console.log('\n📱 User ne ride mangi...');
 
   let driverStatuses = [];

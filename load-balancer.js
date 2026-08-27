@@ -31,6 +31,12 @@ app.get('/request-ride', async (req, res) => {
 
     try {
       const response = await fetch(`${targetServer}/request-ride`);
+       if (!response.ok) {
+        // yeh server Leader nahi hai, agla try karo
+        const errData = await response.json();
+        console.log(`⏭️  Load Balancer: ${targetServer} — ${errData.message}, agla try kar rahe hain`);
+        continue;
+      }
       const data = await response.json();
       console.log(`✅ Load Balancer: ${targetServer} ne handle kiya`);
       return res.json(data);
