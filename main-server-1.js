@@ -16,14 +16,24 @@ let isLeader = false;
 
 async function leaderElectionLoop() {
   while (true) {
-    if (isLeader) {
-      await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
-    } else {
-      const result = await redisClient.set(LOCK_KEY, MY_NAME, { NX: true, EX: LOCK_TTL_SECONDS });
-      if (result === 'OK') {
-        console.log(`👑 ${MY_NAME}: Main ab LEADER hoon!`);
-        isLeader = true;
+    try {
+      if (isLeader) {
+        const currentHolder = await redisClient.get(LOCK_KEY);
+        if (currentHolder === MY_NAME) {
+          await redisClient.expire(LOCK_KEY, LOCK_TTL_SECONDS);
+        } else {
+          console.log(`❌ ${MY_NAME}: Leadership chali gayi`);
+          isLeader = false;
+        }
+      } else {
+        const result = await redisClient.set(LOCK_KEY, MY_NAME, { NX: true, EX: LOCK_TTL_SECONDS });
+        if (result === 'OK') {
+          console.log(`👑 ${MY_NAME}: Main ab LEADER hoon!`);
+          isLeader = true;
+        }
       }
+    } catch (err) {
+      console.log(`⚠️ ${MY_NAME}: Redis error —`, err.message);
     }
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
