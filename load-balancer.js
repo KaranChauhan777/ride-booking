@@ -18,7 +18,34 @@ const drivers = [
 
 let currentIndex = 0;
 
-app.get('/request-ride', async (req, res) => {
+// ---- Rate limiter (fixed window, Redis INCR) ----
+const RATE_LIMIT = 5;        // max requests
+const WINDOW_SECONDS = 10;   // is window mein
+
+async function rateLimiter(req, res, next) {
+  const key = `rate:${req.ip}`;
+  try {
+    const count = await redisClient.incr(key);
+
+    // expiry na ho (pehli request, ya expire set hone se pehle crash) toh set karo
+    let ttl = await redisClient.ttl(key);
+    if (ttl === -1) {
+      await redisClient.expire(key, WINDOW_SECONDS);
+      ttl = WINDOW_SECONDS;
+    }
+
+    if (count > RATE_LIMIT) {
+      res.set('Retry-After', String(ttl));
+      return res.status(429).json({ code: 'RATE_LIMITED', message: 'Too many requests, thodi der baad try karo' });
+    }
+  } catch (err) {
+    // Redis down ho toh limiter bypass (fail-open), warna poora system band ho jayega
+    console.log('⚠️ Rate limiter: Redis error, request allow kar rahe hain');
+  }
+  next();
+}
+
+app.get('/request-ride', rateLimiter, async (req, res) => {
   console.log('\n🌐 Load Balancer: request aayi');
 
   for (let attempt = 0; attempt < servers.length; attempt++) {
@@ -27,62 +54,61 @@ app.get('/request-ride', async (req, res) => {
 
     try {
       const response = await fetch(`${targetServer}/request-ride`);
+      const data = await response.json();
 
-      if (!response.ok) {
-        const errData = await response.json();
-        console.log(`⏭️  Load Balancer: ${targetServer} — ${errData.message}, agla try kar rahe hain`);
+      if (response.ok) {
+        console.log(`✅ Load Balancer: ${targetServer} ne handle kiya`);
+        return res.json(data);
+      }
+
+      if (data.code === 'NOT_LEADER') {
+        console.log(`⏭️  Load Balancer: ${targetServer} leader nahi hai, agla try kar rahe hain`);
         continue;
       }
 
-      const data = await response.json();
-      console.log(`✅ Load Balancer: ${targetServer} ne handle kiya`);
-      return res.json(data);
+      // leader ne jawab diya (jaise NO_DRIVERS) - ye "system down" nahi hai, seedha client ko do
+      console.log(`ℹ️  Load Balancer: ${targetServer} ne reject kiya — ${data.message}`);
+      return res.status(response.status).json(data);
     } catch (err) {
       console.log(`⚠️  Load Balancer: ${targetServer} down hai, agla try kar rahe hain`);
     }
   }
 
-  console.log('❌ Load Balancer: koi server available nahi');
-  res.status(503).json({ message: 'Sorry, poora system abhi down hai' });
+  console.log('❌ Load Balancer: koi leader available nahi');
+  res.status(503).json({ code: 'NO_LEADER', message: 'Leader election chal raha hai, thodi der baad try karo' });
 });
 
-// Naya endpoint - dashboard ke liye poore system ka snapshot deta hai
-app.get('/system-status', async (req, res) => {
-  const driverStatuses = await Promise.all(
-    drivers.map(async (d) => {
-      try {
-        const r = await fetch(`${d.url}/status`);
-        const data = await r.json();
-        return { name: d.name, free: data.free, freeSince: data.freeSince, alive: true };
-      } catch (err) {
-        return { name: d.name, free: false, freeSince: null, alive: false };
+app.get('/request-ride', rateLimiter, async (req, res) => {
+  console.log('\n🌐 Load Balancer: request aayi');
+
+  // starting point EK BAAR fix karo (koi await nahi, isliye race nahi hoga)
+  const start = currentIndex;
+  currentIndex = (currentIndex + 1) % servers.length;
+
+  for (let attempt = 0; attempt < servers.length; attempt++) {
+    const targetServer = servers[(start + attempt) % servers.length];
+
+    try {
+      const response = await fetch(`${targetServer}/request-ride`);
+      const data = await response.json();
+
+      if (response.ok) {
+        console.log(`✅ Load Balancer: ${targetServer} ne handle kiya`);
+        return res.json(data);
       }
-    })
-  );
 
-  let leader = null;
-  try {
-    leader = await redisClient.get('main-server-leader-lock');
-  } catch (err) {
-    leader = null;
+      if (data.code === 'NOT_LEADER') {
+        console.log(`⏭️  Load Balancer: ${targetServer} leader nahi hai, agla try kar rahe hain`);
+        continue;
+      }
+
+      console.log(`ℹ️  Load Balancer: ${targetServer} ne reject kiya — ${data.message}`);
+      return res.status(response.status).json(data);
+    } catch (err) {
+      console.log(`⚠️  Load Balancer: ${targetServer} down hai, agla try kar rahe hain`);
+    }
   }
 
-  let totalRides = 0;
-  try {
-    totalRides = await redisClient.lLen('ride-history');
-  } catch (err) {
-    totalRides = 0;
-  }
-
-  res.json({
-    leader,
-    servers: ['main-server-1', 'main-server-2'],
-    drivers: driverStatuses,
-    totalRides,
-  });
-});
-
-app.listen(PORT, () => {
-  console.log(`Load Balancer chal raha hai http://localhost:${PORT}`);
-  console.log('Dashboard: http://localhost:5000\n');
+  console.log('❌ Load Balancer: koi leader available nahi');
+  res.status(503).json({ code: 'NO_LEADER', message: 'Leader election chal raha hai, thodi der baad try karo' });
 });

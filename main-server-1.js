@@ -2,7 +2,7 @@ const express = require('express');
 const redisClient = require('./redis-client');
 const app = express();
 const PORT = 3000;
-const MY_NAME = 'main-server-1'; 
+const MY_NAME = 'main-server-1';
 
 const drivers = [
   'http://localhost:4001',
@@ -41,36 +41,34 @@ async function leaderElectionLoop() {
 leaderElectionLoop();
 
 app.get('/request-ride', async (req, res) => {
-   if (!isLeader) {
-    return res.status(503).json({ message: `${MY_NAME} Leader nahi hai abhi` });
+  if (!isLeader) {
+    return res.status(503).json({ code: 'NOT_LEADER', message: `${MY_NAME} Leader nahi hai abhi` });
   }
   console.log('\n📱 User ne ride mangi...');
 
-  let driverStatuses = [];
-
-  // Step 1: sabse pehle sabka status poochho (sirf padhne ke liye, lock nahi)
-  for (const driverUrl of drivers) {
+  // Step 1: sabhi drivers ko EK SAATH poochho (parallel)
+  const statusPromises = drivers.map(async (driverUrl) => {
     try {
       const statusRes = await fetch(`${driverUrl}/status`);
       const statusData = await statusRes.json();
-      if (statusData.free) {
-        driverStatuses.push({ url: driverUrl, ...statusData });
-      }
+      return statusData.free ? { url: driverUrl, ...statusData } : null;
     } catch (err) {
       console.log(`⚠️  ${driverUrl} respond nahi kar raha`);
+      return null;
     }
-  }
+  });
+  const results = await Promise.all(statusPromises);
+  const driverStatuses = results.filter(r => r !== null);
 
   if (driverStatuses.length === 0) {
     console.log('❌ Koi driver free nahi mila');
-    return res.status(503).json({ message: 'Sorry, abhi koi driver free nahi hai' });
+    return res.status(503).json({ code: 'NO_DRIVERS', message: 'Sorry, abhi koi driver free nahi hai' });
   }
 
-  // Step 2: sabse zyada idle wale ko pehle try karne ke liye sort karo
+  // Step 2: sabse zyada idle wale ko pehle try karo
   driverStatuses.sort((a, b) => a.freeSince - b.freeSince);
 
-  // Step 3: sorted order mein ek-ek karke ATOMIC assign try karo
-  // agar race mein haar gaya (koi aur pehle le gaya), agle ko try karo
+  // Step 3: sorted order mein ATOMIC assign, race haar gaye toh agla
   for (const driver of driverStatuses) {
     try {
       const assignRes = await fetch(`${driver.url}/assign-ride`, { method: 'POST' });
@@ -86,10 +84,9 @@ app.get('/request-ride', async (req, res) => {
   }
 
   console.log('❌ Sab busy ho gaye race mein');
-  res.status(503).json({ message: 'Sorry, abhi koi driver free nahi hai' });
+  res.status(503).json({ code: 'NO_DRIVERS', message: 'Sorry, abhi koi driver free nahi hai' });
 });
 
 app.listen(PORT, () => {
   console.log(`Main server chal raha hai http://localhost:${PORT}`);
-  console.log('Ride mangne ke liye browser mein kholo: http://localhost:3000/request-ride\n');
 });
